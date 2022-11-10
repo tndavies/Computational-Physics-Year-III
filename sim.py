@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 ### === Physical Constants (SI UNITS) === ###
+
 SOLAR_MASS = 2e30
 SIGMA = 5.6704e-8
 G = 6.6743e-11
@@ -16,24 +17,20 @@ h = 6.6261e-34
 k = 1.3807e-23
 c = 3e8
 
-# Supervisor Meeting Questions
-# 1) For large frequencies, np.exp in temp function overflows ... how to handle it?
-# 2) How to integrate spectrum plot as its a discrete data set ... maybe linearly interpolate between nearest data points?
-# 3) Explain physics of line emission
+### === Enable Plots === ###
+
+ENABLE_TEMP_RAD_PLOT = False
 
 ### === Simulation Parameters === ###
-FREQ_SAMPLES = 1e3
-FNT_SIZE = 22
 
 bhMass = 10*SOLAR_MASS
-bhAccRate = 1e15
+bhAccRate = 1e15 			# [kg/s]
 Rg = (G*bhMass)/(c**2)
-Rl = 6*Rg # inner disk radius 
-Ru = (1e5)*Rg # outter disk radius
-Fl = 1e14 # photon frequency range start (Hz) 
-Fu = 1e19 # photon frequency range end (Hz) 
+rin, rout = 6,1e15			# Accretion disk inner/outer radii (in units of Rg)
+PLOT_TSIZE = 25				# Size of title/axis labels on plots
 
-# @optimise: Upgrade to RK4 for faster convergence
+###  ======================= ###
+
 def integrator(f, a, b, bN):
 	bWidth = (b - a) / bN
 	binx, sum = a, 0
@@ -45,63 +42,92 @@ def integrator(f, a, b, bN):
 
 	return sum
 
-# @note: this is the non-viscous temperature function!
-def dktemperature(R):
-	n = G * bhMass * bhAccRate
-	d = 8*np.pi*SIGMA*(R**3)
+def temp(r):
+	n = 3 * G * bhMass * bhAccRate
+	d = 8*np.pi*SIGMA*(Rg**3)*(r**3)
+	m = (n / d) * (1 - np.sqrt(rin / r))
 
-	return np.power(n/d, 0.25)
+	return np.power(m, 0.25)
 
-def emission_intensity(T, nu):
-	n = (2*np.pi*h*(nu**3)) / (c**2)
-	m = (h*nu) / (k*T)
-	d = np.exp(m) - 1
+def blackbody(T, v):
+	n = (2*np.pi*h)/(c**2)
+	m = (h*v) / (k*T)
+	r = 0
 
-	return n / d
+	# exp(>700) can't be stored with a 64-bit float
+	EXP_F64_LIMIT = 709
+	if(m >= EXP_F64_LIMIT):
+		r = (n*(v**3))*np.exp(-m)
+	else:
+		r = (n*(v**3))/(np.exp(m)-1)
 
-# @optimise: Switch integral to use log bins for faster possible faster convergence? 
-def spectral_intensity(nu, bN):
-	int = integrator(
-			lambda bO,bW : bO*emission_intensity(dktemperature(bO+0.5*bW), nu),
-			Rl, Ru,
-			bN
-		)
-
-	return 4*np.pi*int
+	return r
 
 def compute_spectrum(bN):
-	frequencies = np.linspace(Fl, Fu, FREQ_SAMPLES)
-	luminosities = []
+	lums, freqs = [], [] # spectrum results
+	lfs,lfe=14,19 # log10 of lower/upper frequencies
+
+	# iterate over each decade between 10^0 and 10^15
+	decade_sample_count = 1000
+	for i in range(lfs, lfe):
+		_g = 4*np.pi*(Rg**2)
+		decade_start = 10**i
+		decade_end = 10**(i+1)
+		
+		fs = np.linspace(decade_start,decade_end,decade_sample_count)
+		for v in fs:
+			def Foo(bO,bW):
+				u = bO+0.5*bW
+				x = temp(np.exp(u))
+				y = blackbody(x,v)
+				return y*np.exp(u)
+
+			vlum = _g*integrator(Foo, np.log(rin), np.log(rout), bN)
+			freqs.append(v)
+			lums.append(vlum)
+
+	return freqs, lums		
+
+### === Plot accretion disk temperature vs Radius (starting from r=rin) === ###
+if(ENABLE_TEMP_RAD_PLOT):
+	radii, temps = [], []
+
+	# iterate over each decade between 10^0 and 10^15
+	decade_sample_count = 500
+	for i in range(0, 7):
+		decade_start = rin * (10**i)
+		decade_end = rin * (10**(i+1))
+		
+		rs = np.linspace(decade_start,decade_end,decade_sample_count)
+		ts = temp(rs)
+
+		for k in rs: radii.append(k)
+		for k in ts: temps.append(k)
+
+	plt.figure()
+	plt.title("Accretion Disk Temperature vs. Radius", fontsize=PLOT_TSIZE)
+	plt.ylabel("Temperature [K]", fontsize=PLOT_TSIZE)
+	plt.xlabel(r'$log_{10}(r_s)$', fontsize=PLOT_TSIZE)
+	plt.plot(np.log10(radii), temps, "-")
+	plt.show()
 	
-	for nu in frequencies:
-		Lnu = spectral_intensity(nu, bN)
-		luminosities.append(Lnu)
+### ========================================== ###
 
-	return frequencies, luminosities
+fs, ls = compute_spectrum(1000)
 
-### === Obtain Emission Spectrum === ###
-freqs, lums = compute_spectrum(10)
+print(np.trapz(ls,fs))
+
 plt.figure()
-plt.title("Accretion Disk Spectrum (RAW)", fontsize=FNT_SIZE)
-plt.xlabel(r'$\nu$',fontsize=FNT_SIZE)
-plt.ylabel(r'$\L_{\nu}$',fontsize=FNT_SIZE)
-plt.plot(freqs, lums, "x--")
+plt.title("Accretion Disk Spectrum", fontsize=PLOT_TSIZE)
+plt.ylabel("log10(v*L) [??]", fontsize=PLOT_TSIZE)
+plt.xlabel("log10(v) [Hz]", fontsize=PLOT_TSIZE)
+plt.plot(fs, ls, "x-")
 plt.show()
 
-### === Obtain Total Disk Emission Luminosity === ###
-specA,specB=1.2e13,1e18
 
-#def spectrum_function(nu):
-	# get two nearest frequency data samples
-	# linearly interpolate between them
-	# return the interpolated intensity value
 
-#tLum = integrator(spectrum_function, specA, specB, TLUM_BIN_COUNT)
-#print("Total Accretion Disk Luminosity: " + str(tLum) + " [W??]")
 
-### === Demonstrate Convergence for Bin Counts === ###
-diffMetric = 0
-for idx,f in enumerate(freqs):
-	diffMetric = diffMetric + abs( lums[idx] - lums2[idx] )
 
-print("Difference metric: " + str(diffMetric))
+
+
+
