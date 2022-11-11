@@ -17,17 +17,15 @@ h = 6.6261e-34
 k = 1.3807e-23
 c = 3e8
 
-### === Enable Plots === ###
-
-ENABLE_TEMP_RAD_PLOT = False
-
 ### === Simulation Parameters === ###
 
 bhMass = 10*SOLAR_MASS
 bhAccRate = 1e15 			# [kg/s]
 Rg = (G*bhMass)/(c**2)
-rin, rout = 6,1e15			# Accretion disk inner/outer radii (in units of Rg)
-PLOT_TSIZE = 25				# Size of title/axis labels on plots
+rin, rout = 6,1e5			# Accretion disk inner/outer radii (in units of Rg)
+
+PTXTSIZE = 20 				# Size of text on plots
+PTRANS = False				# Make background of plots transparent
 
 ###  ======================= ###
 
@@ -66,9 +64,8 @@ def blackbody(T, v):
 def compute_spectrum(bN):
 	lums, freqs = [], [] # spectrum results
 	lfs,lfe=14,19 # log10 of lower/upper frequencies
-
 	# iterate over each decade between 10^0 and 10^15
-	decade_sample_count = 1000
+	decade_sample_count = 100
 	for i in range(lfs, lfe):
 		_g = 4*np.pi*(Rg**2)
 		decade_start = 10**i
@@ -81,49 +78,49 @@ def compute_spectrum(bN):
 				x = temp(np.exp(u))
 				y = blackbody(x,v)
 				return y*np.exp(u)
-
 			vlum = _g*integrator(Foo, np.log(rin), np.log(rout), bN)
 			freqs.append(v)
 			lums.append(vlum)
+	return freqs, lums
 
-	return freqs, lums		
 
-### === Plot accretion disk temperature vs Radius (starting from r=rin) === ###
-if(ENABLE_TEMP_RAD_PLOT):
-	radii, temps = [], []
+### === Accretion Disk Temeprature Profile === ###
 
-	# iterate over each decade between 10^0 and 10^15
-	decade_sample_count = 500
-	for i in range(0, 7):
-		decade_start = rin * (10**i)
-		decade_end = rin * (10**(i+1))
-		
-		rs = np.linspace(decade_start,decade_end,decade_sample_count)
-		ts = temp(rs)
+# iterate over each decade between 10^0 and 10^15
+radii, temps = [], []
+decade_sample_count = 500
+for i in range(0, 7):
+	decade_start = rin * (10**i)
+	decade_end = rin * (10**(i+1))
+			
+	rs = np.linspace(decade_start,decade_end,decade_sample_count)
+	ts = temp(rs)
 
-		for k in rs: radii.append(k)
-		for k in ts: temps.append(k)
-
-	plt.figure()
-	plt.title("Accretion Disk Temperature vs. Radius", fontsize=PLOT_TSIZE)
-	plt.ylabel("Temperature [K]", fontsize=PLOT_TSIZE)
-	plt.xlabel(r'$log_{10}(r_s)$', fontsize=PLOT_TSIZE)
-	plt.plot(np.log10(radii), temps, "-")
-	plt.show()
-	
-### ========================================== ###
-
-fs, ls = compute_spectrum(1000)
-
-print(np.trapz(ls,fs))
+	for j in rs: radii.append(j)
+	for j in ts: temps.append(j)
 
 plt.figure()
-plt.title("Accretion Disk Spectrum", fontsize=PLOT_TSIZE)
-plt.ylabel("log10(v*L) [??]", fontsize=PLOT_TSIZE)
-plt.xlabel("log10(v) [Hz]", fontsize=PLOT_TSIZE)
-plt.plot(fs, ls, "x-")
-plt.show()
+plt.xlabel(r'$log_{10}(r_s)$', fontsize=PTXTSIZE)
+plt.ylabel("T [K]", fontsize=PTXTSIZE)
+plt.plot(np.log10(radii), temps, "-")
+plt.savefig("TvsR", transparent=PTRANS, bbox_inches='tight')
 
+### === Accretion Disk Spectrum Plot === ###
+freqs, lums = compute_spectrum(1000)
+
+fs, ls = freqs.copy(), lums.copy()
+for idx, v in enumerate(fs):
+	ls[idx] = ls[idx]*v
+
+plt.figure()
+plt.xlabel(r'$\log_{10}(\nu) \; [\log_{10} \: Hz]$', fontsize=PTXTSIZE)
+plt.ylabel(r'$\log_{10}(\nu \: L_{\nu}) \; [\log_{10} \: W]$', fontsize=PTXTSIZE)
+plt.plot(np.log10(fs), np.log10(ls), "-")
+plt.savefig("spectrum", transparent=PTRANS, bbox_inches='tight')
+
+### === Accretion Disk Total Luminosity Value === ###
+total_lum = np.trapz(lums,freqs)
+print("Accretion Disk Luminosity: " + str(total_lum) + " [Watts]")
 
 
 
