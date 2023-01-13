@@ -20,6 +20,8 @@ c = 3e8
 IntegralSampleDensity = 100
 SamplesPerDecade = 50
 
+FNT_SIZE = 15
+
 class BlackHole:
 	def __init__(self, bk_mass, bk_accrate, bk_spin):
 		self.mass = bk_mass
@@ -142,33 +144,52 @@ def ComputeEmissionSpectrum(bk, tModel):
 
 # === SIMULATION ===#
 
-bk = BlackHole(10*solar_mass,1e15,0) # milestone blackhole (no spin)
-
 # Plot of Newtonian and GR temperature models,
 # over the milestone blackhole accretion disk.
-tempsN, tempsGR = [], []
-radii = SubSampleRange(bk.rms,bk.rout,5*(bk.rout-bk.rms))
-for r in radii:
-	tempsN.append(TempDistNw(r,bk))
-	tempsGR.append(TempDistGR(r,bk))
+def GenTempPlot(spin):	
+	bk = BlackHole(10*solar_mass,1e15,spin)
+	tempsN, tempsGR = [], []
+	
+	radii = np.linspace(bk.rms,bk.rout,15*(bk.rout-bk.rms))
+	for r in radii:
+		tempsN.append(TempDistNw(r,bk))
+		tempsGR.append(TempDistGR(r,bk))
+
+	return radii,tempsN,tempsGR
+
+radii0,tempsN0,tempsGR0 = GenTempPlot(-0.998)
+radii1,tempsN1,tempsGR1 = GenTempPlot(0)
+radii2,tempsN2,tempsGR2 = GenTempPlot(0.998)
+
 plt.figure()
-plt.xlabel("Scaled Radius")
-plt.ylabel("Temperature [K]")
-plt.plot(np.log10(radii), tempsN, label="Newtonian Model")
-plt.plot(np.log10(radii), tempsGR, label="General Relativity Model")
+plt.xlabel(r'$log_{10} \; r$', fontsize=FNT_SIZE)
+plt.ylabel("T [K]", fontsize=FNT_SIZE)
+
+s0,c0 = r'$a^* = -0.998$', 'r'
+plt.plot(np.log10(radii0), tempsGR0, ""+c0, label=s0)
+plt.plot(np.log10(radii0), tempsN0, "--"+c0)
+
+s1,c1 = r'$a^* = 0$', 'g'
+plt.plot(np.log10(radii1), tempsGR1, ""+c1, label=s1)
+plt.plot(np.log10(radii1), tempsN1, "--"+c1)
+
+s2,c2 = r'$a^* = +0.998$', 'b'
+plt.plot(np.log10(radii2), tempsGR2, ""+c2, label=s2)
+plt.plot(np.log10(radii2), tempsN2, "--"+c2)
+
 plt.legend()
 plt.savefig("fig1.png")
 
-# Plots of the milestone black hole spectrum in both the Newtonian
-# and GR models.
-freqs0,lums0,flums0,tlum0 = ComputeEmissionSpectrum(bk, TempDistNw)
-freqs1,lums1,flums1,tlum1 = ComputeEmissionSpectrum(bk, TempDistGR)
-plt.figure()
-plt.xlabel("log10 frequency [Hz]")
-plt.ylabel("log10 Luminosity?? [??]")
-plt.plot(np.log10(freqs0), np.log10(flums0), label="Newtonian Model")
-plt.plot(np.log10(freqs1), np.log10(flums1), label="General Relativity Model")
-plt.savefig("fig2.png")
+	# Plots of the milestone black hole spectrum in both the Newtonian
+	# and GR models.
+	# freqs0,lums0,flums0,tlum0 = ComputeEmissionSpectrum(bk, TempDistNw)
+	# freqs1,lums1,flums1,tlum1 = ComputeEmissionSpectrum(bk, TempDistGR)
+	# plt.figure()
+	# plt.xlabel("log10 frequency [Hz]")
+	# plt.ylabel("log10 Luminosity?? [??]")
+	# plt.plot(np.log10(freqs0), np.log10(flums0), label="Newtonian Model")
+	# plt.plot(np.log10(freqs1), np.log10(flums1), label="General Relativity Model")
+	# plt.savefig("fig2.png")
 
 # Plot of how the inner accretion disk radius changes as the milestone
 # black hole spins.
@@ -177,8 +198,8 @@ for s in spins:
 	blackhole = BlackHole(10*solar_mass, 1e15, s) 
 	rins.append(blackhole.rms)
 plt.figure()
-plt.xlabel(r'$a^*$')
-plt.ylabel(r'$r_{in}$')
+plt.xlabel(r'$a^*$', fontsize=FNT_SIZE)
+plt.ylabel(r'$r_{in}$', fontsize=FNT_SIZE)
 plt.plot(spins, rins)
 plt.savefig("fig3.png")
 
@@ -189,7 +210,7 @@ for s in spins:
  	freqs,lums,flums,tlum = ComputeEmissionSpectrum(blackhole, TempDistGR)
  	tlums.append(tlum)
 plt.figure()
-plt.xlabel(r'$a^*$')
-plt.ylabel("Total Emission Luminsotiy [Watts]")
-plt.plot(spins, tlums, "x--")
+plt.xlabel(r'$a^*$', fontsize=FNT_SIZE)
+plt.ylabel('$L_{tot} \; [W]$', fontsize=FNT_SIZE)
+plt.plot(spins, tlums)
 plt.savefig("fig4.png")
