@@ -5,10 +5,12 @@
 # ====================================================== 
 
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 import numpy as np
+import math
 
-# Physical Constants
-solar_mass = 2e30
+# ----------------------------- PHYSICAL CONSTANTS (SI) -----------------------------#
+MSOL = 1.99e30
 sb = 5.6704e-8
 G = 6.6743e-11
 h = 6.6261e-34
@@ -16,11 +18,12 @@ k = 1.3807e-23
 pi = np.pi
 c = 3e8
 
-# Numerical evaluation parameters
-IntegralSampleDensity = 100
-SamplesPerDecade = 50
+# ----------------------------- COMPUTATION ROUTINES -----------------------------#
 
-FNT_SIZE = 15
+def Fade(col, n, bias=0.1, m=0.7):
+	alpha = 1.0 - 1.0 / np.power(n, m)
+	alpha = min(alpha + bias, 1.0)
+	return (*col, alpha)
 
 class BlackHole:
 	def __init__(self, bk_mass, bk_accrate, bk_spin):
@@ -28,11 +31,6 @@ class BlackHole:
 		self.accrate = bk_accrate
 		self.spin = bk_spin
 
-		# Here we compute several constants that depend on the
-		# black hole's spin state ... for example rin is the
-		# inner radius of the accretion disk, and is used in all
-		# cases ... whereas most others are only used when the
-		# GR temperature model is used during simulation.
 		self.aS = abs(self.spin)
 
 		n = np.arccos(self.aS)
@@ -47,13 +45,12 @@ class BlackHole:
 		z1 = 1 + za*(zb + zc)
 		z2 = np.sqrt( 3*(self.aS**2) + z1**2 )
 
-		self.rms = 0
-		prograde = True if(self.spin>0) else False
-		if(prograde): self.rms = (3 + z2) - np.sqrt((3-z1)*(3+z1+2*z2))
-		else:  		  self.rms = (3 + z2) + np.sqrt((3-z1)*(3+z1+2*z2))	
+		# Both branches yield same rms value for spin=0.
+		# rms is calculated in units of Rg.
+		if(self.spin >= 0): self.rms = (3 + z2) - np.sqrt((3-z1)*(3+z1+2*z2)) 	# prograde case
+		else: 				self.rms = (3 + z2) + np.sqrt((3-z1)*(3+z1+2*z2))	# retrograde case
 
 		self.yms = np.sqrt(self.rms)
-
 		self.rout = 1e5 # Outer disk radius (scaled units R/Rg) 
 		self.Rg = (G*self.mass)/(c**2)
 
@@ -61,22 +58,9 @@ def RadDist(t, v):
 	n = (2*pi*h*(v**3))/c**2
 	p = (h*v)/(k*t)
 
-	# If p takes a value bigger than THRESHOLD
-	# then exp(p) will be too big for us to store
-	# in memory.
 	THRESHOLD = 709
-
-	if(p >= THRESHOLD):
-		return n*np.exp(-p)
-	else:
-		return n/(np.exp(p) - 1)
-
-# Newtonian derived temperature model
-def TempDistNw(r, bk):
-	n = 3*G*bk.mass*bk.accrate
-	d = 8*pi*sb*((bk.Rg*r)**3)
-	t4 = (n/d)*(1-np.power(bk.rms/r,0.5))
-	return np.power(t4, 0.25)
+	if(p >= THRESHOLD): return n*np.exp(-p)
+	else: return n/(np.exp(p) - 1)
 
 # General Relativity derived temperature model
 def TempDistGR(r, bk):
@@ -95,122 +79,279 @@ def TempDistGR(r, bk):
 	C = 1 - (3/r) + (2*bk.aS) / np.power(r, 1.5)
 
 	corrFactor = (A-B)/C 
+	n = 3*G*bk.mass*bk.accrate
+	d = 8*pi*sb*((bk.Rg*r)**3)
+	t4 = (n/d)*corrFactor
+	
+	return np.power(t4, 0.25)
 
-	return TempDistNw(r, bk) * corrFactor
-
-def ComputePhotonLuminosity(v, bk, tModel):
-	a,b = np.log(bk.rms), np.log(bk.rout) 	# logarithmic integral bounds
-
+def ComputePhotonLuminosity(v, bk, tModel, binCount):
 	def integrand(u):
 		r = np.exp(u)
-		t = tModel(r, bk)
-		f = RadDist(t, v)
-		return f * (r**2)
+		return RadDist(tModel(r, bk), v) * (r**2)
 
-	# The integrand is undefined at u=a as TempDist(a)=0 in the model,
-	# thus we bias the lower bound slightly as to avoid this.
-	LowerBoundBias = 1.001
+	# Emission integral (logarithmic) bounds
+	a,b = np.log(bk.rms), np.log(bk.rout) 	
 
-	# Sample integrand over integration range [a,b]
-	uvals,samples = np.linspace(LowerBoundBias*a, b, IntegralSampleDensity),[]
-	for u in uvals: samples.append(integrand(u))
+	# Generate bins and sample integrand function
+	BinStart = a 
+	u_vals, f_vals = [], []
+	BinWidth = (b-a) / binCount
+	for i in range(binCount):
+		u_vals.append(BinStart + 0.5*BinWidth ) 
+		f_vals.append( integrand(u_vals[-1]) )
+		BinStart += BinWidth
 
 	# Approximate integral using trapezium rule
-	prefactor = 4*pi*(bk.Rg**2)
-	int = np.trapz(samples, uvals)
-	lv = prefactor * int
+	emission_integral = 4*pi*(bk.Rg**2) * np.trapz(f_vals, u_vals)
 
-	return(lv)
+	return emission_integral
 
-def ComputeEmissionSpectrum(bk, tModel):
+def ComputeEmissionSpectrum(bk, expA, expB, BinCount, DecadeDensity):
 	freqs, lums, flums = [], [], []
-	fexp0, fexp1 = 14, 19			# spectrum frequency range
 
-	for exp in range(fexp0,fexp1):
-		# boundary values for current frequency decade (start, end)
-		ds = 10**exp  
-		de = ds*10
-
-		for f in np.linspace(ds, de, SamplesPerDecade):
-			l = ComputePhotonLuminosity(f, bk, tModel)
+	for i in range(expA, expB):
+		ds, de = 10**i, 10**(i+1)
+		for f in np.linspace(ds,de,DecadeDensity):
 			freqs.append(f)
-			lums.append(l)
-			flums.append(f*l)
+	
+	for f in freqs:
+		l = ComputePhotonLuminosity(f, bk, TempDistGR, BinCount)
+		lums.append(l)
+		flums.append(f*l)
 
-	tlum = np.trapz(lums,freqs)
+	tlum = np.trapz(lums, freqs)
 
 	return freqs,lums,flums,tlum
 
+# ----------------------------- PLOTTING ROUTINE -----------------------------#
 
-# === SIMULATION ===#
+BK_MASS, BK_ACCRATE = 7.0*MSOL, 8.0e12 
+plot_col = (0.458824, 0.121569, 0.768627)
 
-# Plot of Newtonian and GR temperature models,
-# over the milestone blackhole accretion disk.
-def GenTempPlot(spin):	
-	bk = BlackHole(10*solar_mass,1e15,spin)
-	tempsN, tempsGR = [], []
+# Plot of how inner disk radius (Rin) changes with spin parameter (a*)
+def InnerRadiusPlot():
+	plt.figure()
+	plt.xlabel(r"$a*$")
+	plt.ylabel(r"$R_{in} \;\; [R_g]$")
+
+	# Generates a Rin vs a* plot for a given number of spins.
+	def GenPlot(expN):
+		Rin_Values = []
+		SpinStates = np.linspace(-0.998, 0.998, 10**expN)
+		for spin in SpinStates:
+			bk = BlackHole(BK_MASS, BK_ACCRATE, spin)
+			Rin_Values.append(bk.rms)
+		return SpinStates, Rin_Values
+
+	for idx,expN in enumerate(range(1,4)):
+		res = GenPlot(expN)
+		col = Fade(plot_col, idx + 1, 0.3)
+		plt.plot(res[0], res[1], color=col, label=r"$log \: N=$"+str(expN))
+		
+	plt.legend()
+	plt.show()
+
+# # Plot of Newtonian & GR Thermal models for our black hole in the no-spin case
+# def Spinless_tProfiles():
+# 	plt.figure()
 	
-	radii = np.linspace(bk.rms,bk.rout,15*(bk.rout-bk.rms))
-	for r in radii:
-		tempsN.append(TempDistNw(r,bk))
-		tempsGR.append(TempDistGR(r,bk))
+# 	Datasets = []
+# 	scale = 1e6 # for plot aethsetics
+# 	bk = BlackHole(BK_MASS, BK_ACCRATE, 0)
+# 	for expN in tqdm(np.linspace(1,6,12), desc="spinless_tProf"):
+# 		radii = np.linspace(bk.rms, bk.rout, 10**expN)
+# 		tNw, tGR = [],[]
 
-	return radii,tempsN,tempsGR
+# 		for r in radii:
+# 			tNw.append(TempDistNw(r, bk) / scale)
+# 			tGR.append(TempDistGR(r, bk) / scale)
 
-radii0,tempsN0,tempsGR0 = GenTempPlot(-0.998)
-radii1,tempsN1,tempsGR1 = GenTempPlot(0)
-radii2,tempsN2,tempsGR2 = GenTempPlot(0.998)
+# 		Datasets.append( (expN,radii,tNw,tGR) )
 
-plt.figure()
-plt.xlabel(r'$log_{10} \; r$', fontsize=FNT_SIZE)
-plt.ylabel("T [K]", fontsize=FNT_SIZE)
+# 	for idx,ds in enumerate(Datasets):
+# 		expN, radii, tNw, tGR = ds # unpack dataset
+# 		sRadii = np.log10(radii)
 
-s0,c0 = r'$a^* = -0.998$', 'r'
-plt.plot(np.log10(radii0), tempsGR0, ""+c0, label=s0)
-plt.plot(np.log10(radii0), tempsN0, "--"+c0)
+# 		Opts = "--"
+# 		LineWidth = 0.8
+# 		lbl = r"$\log \: N =$"+str(round(expN,2))
+# 		if(idx == len(Datasets) - 1):
+# 			LineWidth = 1.2
+# 			Opts = "-"
 
-s1,c1 = r'$a^* = 0$', 'g'
-plt.plot(np.log10(radii1), tempsGR1, ""+c1, label=s1)
-plt.plot(np.log10(radii1), tempsN1, "--"+c1)
+# 		c0 = Fade(plot_col, idx + 1, 0.3, 0.5)
+# 		c1 = Fade(plot_col, idx + 1, 0.3, 0.5)
 
-s2,c2 = r'$a^* = +0.998$', 'b'
-plt.plot(np.log10(radii2), tempsGR2, ""+c2, label=s2)
-plt.plot(np.log10(radii2), tempsN2, "--"+c2)
+# 		plt.subplot(2,1,1)
+# 		plt.plot(sRadii, tNw, Opts, linewidth=LineWidth,label=lbl,color=c0)
 
-plt.legend()
-plt.savefig("fig1.png")
+# 		plt.subplot(2,1,2)
+# 		plt.plot(sRadii, tGR, Opts, linewidth=LineWidth,label=lbl,color=c1)
 
-	# Plots of the milestone black hole spectrum in both the Newtonian
-	# and GR models.
-	# freqs0,lums0,flums0,tlum0 = ComputeEmissionSpectrum(bk, TempDistNw)
-	# freqs1,lums1,flums1,tlum1 = ComputeEmissionSpectrum(bk, TempDistGR)
-	# plt.figure()
-	# plt.xlabel("log10 frequency [Hz]")
-	# plt.ylabel("log10 Luminosity?? [??]")
-	# plt.plot(np.log10(freqs0), np.log10(flums0), label="Newtonian Model")
-	# plt.plot(np.log10(freqs1), np.log10(flums1), label="General Relativity Model")
-	# plt.savefig("fig2.png")
+# 	plt.subplot(2,1,1)
+# 	plt.ylabel("T [MK]")
+# 	plt.legend(loc='center left', bbox_to_anchor=(0.98, 0.5))
 
-# Plot of how the inner accretion disk radius changes as the milestone
-# black hole spins.
-spins, rins = np.linspace(-0.998,0.998,1000), []
-for s in spins: 
-	blackhole = BlackHole(10*solar_mass, 1e15, s) 
-	rins.append(blackhole.rms)
-plt.figure()
-plt.xlabel(r'$a^*$', fontsize=FNT_SIZE)
-plt.ylabel(r'$r_{in}$', fontsize=FNT_SIZE)
-plt.plot(spins, rins)
-plt.savefig("fig3.png")
+# 	plt.subplot(2,1,2)
+# 	plt.xlabel(r"$\ln(r) \;\; [\ln \: R_g]$")
+# 	plt.ylabel("T [MK]")
+# 	plt.legend(loc='center left', bbox_to_anchor=(0.98, 0.5))
 
-# Plot of how the total disk emission luminosity changes with black hole spin.
-spins, tlums = np.linspace(-0.998,0.998,50), []
-for s in spins:
- 	blackhole = BlackHole(10*solar_mass, 1e15, s)
- 	freqs,lums,flums,tlum = ComputeEmissionSpectrum(blackhole, TempDistGR)
- 	tlums.append(tlum)
-plt.figure()
-plt.xlabel(r'$a^*$', fontsize=FNT_SIZE)
-plt.ylabel('$L_{tot} \; [W]$', fontsize=FNT_SIZE)
-plt.plot(spins, tlums)
-plt.savefig("fig4.png")
+# 	plt.show()
+
+# Thermal model plots for our blackhole with various spin-states
+def tProfiles():
+	plt.figure()
+
+	pidx = 1
+	scale = 1e6
+	Rout_Probe = 1e5
+	SpinStates = [-0.998,0.0,0.998]
+	cols = [plot_col, (0.901961, 0.337255, 0.298039),(0.235294, 0.545098, 0.901961)]
+	for s in tqdm(SpinStates, desc="tProfiles"):
+		bk = BlackHole(BK_MASS, BK_ACCRATE, s)
+		Datasets = []
+		
+		for expN in np.linspace(1,6,8):
+			temps = []
+			radii = np.linspace(bk.rms, Rout_Probe, 10**expN)
+			for r in radii: temps.append( TempDistGR(r, bk) / scale ) 
+			Datasets.append( (expN, radii, temps) )
+
+		plt.subplot(2,2,pidx)
+		for idx,ds in enumerate(Datasets):
+			expN, radii, temps = ds
+
+			Opts = "--"
+			LineWidth = 0.9
+			lbl = r"$\log \: N =$"+str(round(expN,2))
+			if(idx == len(Datasets) - 1):
+				LineWidth = 1.3
+				Opts = "-"
+
+			# c0 = Fade(plot_col, idx + 1, 0.3)
+			plt.plot(np.log10(radii), temps, Opts, linewidth=LineWidth,label=lbl,color=cols[pidx-1])
+
+		pidx += 1
+
+	plt.subplot(2,2,1)
+	# plt.title(r"$a^*=-0.998$")
+	plt.xlabel(r"$\log(r) \;\; [\ln \: R_g]$")
+	plt.ylabel("T [MK]")
+
+	plt.subplot(2,2,2)
+	# plt.title(r"$a^*=0$")
+	plt.xlabel(r"$\log(r) \;\; [\ln \: R_g]$")
+	plt.ylabel("T [MK]")
+
+	plt.subplot(2,2,3)
+	# plt.title(r"$a^*=+0.998$")
+	plt.xlabel(r"$\log(r) \;\; [\ln \: R_g]$")
+	plt.ylabel("T [MK]")
+
+	plt.show()
+
+# Plots how total disk luminosity varies with spin parameter, and includes
+# a convergence figure.
+def LuminositySpinPlot():
+	spins = np.linspace(-0.998,0.998,4)
+	fExps = (14,19)
+
+	def calc_tlums(BinCount,DecadeDensity):
+		tlums = []
+		for s in spins:
+			bk = BlackHole(BK_MASS, BK_ACCRATE, s)
+			spec = ComputeEmissionSpectrum(bk,fExps[0],fExps[1],BinCount,DecadeDensity)
+			tlums.append(spec[-1])
+		return tlums
+
+	def CompareDatasets(y_refs,y_ds):
+		metric = 0
+		for j in range(len(y_refs)): 
+			metric += abs(y_ds[j] - y_refs[j])
+		
+		return metric
+
+	# ------------------------------------------------------------- #
+
+	expBinCounts = [1,2,3]
+	expDecadeDensities = [1,2,3,3.3,3.5]
+
+	# Computes how the L(a*) plot varies as the BinCount increases.
+	first, refDS, BC_metrics = True, [], [] 	
+	for expBC in tqdm(expBinCounts, desc="bc_optimal"):
+		bc = math.floor(10**expBC)
+		dd = math.floor(10**expDecadeDensities[0])
+
+		tlums = calc_tlums(bc, dd)
+		if(first): 
+			refDS = tlums.copy()
+			first = False
+
+		CMPmetric = CompareDatasets(refDS, tlums) 
+		BC_metrics.append(CMPmetric)
+
+	# Computes how the L(a*) plot varies as the DecadeDensity increases.
+	# doesn't compute for last value in expDecadeDensities! 
+	first, refDS, DC_metrics = True, [], []
+	for idx in tqdm(range(len(expDecadeDensities) - 1),desc="LA-convergence"):
+		dd = math.floor(10**expDecadeDensities[idx])
+		bc = math.floor(10**expBinCounts[-1])
+
+		tlums = calc_tlums(bc, dd)
+		if(first): 
+			refDS = tlums.copy()
+			first = False
+
+		CMPmetric = CompareDatasets(refDS, tlums) 
+		DC_metrics.append(CMPmetric)
+
+	# Compute the last value in expDecadeDensities
+	tlums_final = calc_tlums(math.floor(10**expBinCounts[-1]), math.floor(10**expDecadeDensities[-1])) 
+	CMPmetric = CompareDatasets(refDS, tlums_final) 
+	DC_metrics.append(CMPmetric)
+
+	scale = 1e9
+	plt.figure()
+	plt.xlabel(r"$a*$")
+	plt.ylabel(r"$L \;\; [GW]$")
+	ys = [y/scale for y in tlums_final]
+	plt.plot(spins, ys, color=plot_col)
+	plt.show()
+
+	plt.figure()
+	plt.subplot(2,1,1)
+	plt.xlabel(r"$\log \: N$")
+	plt.ylabel(r"$\sigma$")
+	plt.plot(expBinCounts, BC_metrics, "o-", color=plot_col)
+
+	plt.subplot(2,1,2)	
+	plt.xlabel(r"$\log M$")
+	plt.ylabel(r"$\sigma$")
+	plt.plot(expDecadeDensities, DC_metrics, "o-", color=plot_col)
+	plt.show()
+
+	return spins, tlums_final
+
+# Plot of the accretion efficiency (eta) as a function of spin state
+def DiskEfficiency(spins, tlums):
+	etas = []
+	for L in tqdm(tlums, desc="diskEff"):
+		eff = L / (BK_ACCRATE*(c**2))
+		etas.append(eff)
+
+	# eta is a dimensionless quantity.
+	plt.figure()
+	plt.xlabel(r"$a*$")
+	plt.ylabel(r"$\eta$")
+	plt.plot(spins, etas, color=plot_col)
+	plt.show()
+
+# ----------------------------- RESULTS CODE -----------------------------#
+plt.rcParams.update({'font.size': 22})
+# InnerRadiusPlot()
+# Spinless_tProfiles()
+tProfiles()
+# la_data = LuminositySpinPlot()
+# DiskEfficiency(*la_data)
